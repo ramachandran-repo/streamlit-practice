@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Dynamic Boxes</title>
+    <style>
+        .row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .box,
+        .textarea-box {
+            width: 300px;
+            height: 50px;
+            border: 1px solid black;
+            position: relative;
+            margin-right: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .box {
+            cursor: pointer;
+        }
+
+        .option-list {
+            display: none;
+            position: absolute;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            max-height: 200px;
+            overflow-y: auto;
+            list-style-type: none;
+            width: 100%;
+            top: 100%;
+            left: 0;
+            z-index: 1;
+        }
+
+        .option-list li {
+            padding: 5px;
+            cursor: pointer;
+        }
+
+        .option-list li:hover {
+            background-color: #f1f1f1;
+        }
+
+        .close-btn {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            cursor: pointer;
+            color: red;
+            font-size: 20px;
+            background: transparent;
+            border: none;
+        }
+
+        textarea {
+            width: 100%;
+            height: 100%;
+            resize: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="channel-container">
+        <div class="row">
+            <div class="box">
+                <span>Select an Option</span>
+                <ul class="option-list">
+                    <!-- More options can be added here -->
+                </ul>
+                <button class="close-btn" onclick="removeRow(this)">x</button>
+            </div>
+            <div class="textarea-box">
+                <textarea></textarea>
+            </div>
+        </div>
+        <button onclick="addRow()">Add Row</button>
+    </div>
+
+    <script>
+        document.addEventListener('click', function (event) {
+            if (event.target.classList.contains('box') ||
+                event.target.parentNode.classList.contains('box')) {
+                toggleOptionList(event.target.querySelector('.option-list') ||
+                    event.target.parentNode.querySelector('.option-list'));
+            } else {
+                var optionLists = document.querySelectorAll('.option-list');
+                optionLists.forEach(function (list) {
+                    list.style.display = 'none';
+                });
+            }
+        });
+
+        function toggleOptionList(list) {
+            var isDisplayed = list.style.display === 'block';
+            var optionLists = document.querySelectorAll('.option-list');
+            optionLists.forEach(function (otherList) {
+                otherList.style.display = 'none';
+            });
+            list.style.display = isDisplayed ? 'none' : 'block';
+        }
+
+        function removeRow(element) {
+            element.closest('.row').remove();
+        }
+
+        function addOptionsToBox(box, options) {
+            alert("executing")
+            var ul = box.querySelector('.option-list');
+            ul.innerHTML = ''; // Clear existing options
+            options.forEach(option => {
+                var li = document.createElement('li');
+                li.textContent = option;
+                li.onclick = () => setOption(box, option);
+                ul.appendChild(li);
+            });
+        }
+        function setOption(box, value) {
+            box.querySelector('span').textContent = value;
+            toggleOptionsList(box);
+        }
+
+        function addRow() {
+            var container = document.getElementById('channel-container');
+            var newRow = document.createElement('div');
+            newRow.className = 'row';
+            newRow.innerHTML = `
+                <div class="box">
+                    <span>Select an Option</span>
+                    <ul class="option-list">
+                        <!-- More options can be added here -->
+                    </ul>
+                    <button class="close-btn" onclick="removeRow(this)">x</button>
+                </div>
+                <div class="textarea-box">
+                    <textarea></textarea>
+                </div>
+            `;
+            container.insertBefore(newRow, container.lastElementChild);
+            refreshOptions();
+        }
+
+        refreshOptions();
+        // var firstBox = document.querySelector('.row .box');
+        // addOptionsToBox(firstBox, ['Option 1', 'Option 2', 'Option 3']); // Add more options as needed
+        function refreshOptions(){
+            var rowList = document.querySelectorAll(".row")
+            for (let row of rowList) {
+                var box = row.querySelector(".box")
+                addOptionsToBox(box, ['Option 4', 'Option 5', 'Option 6']);
+            }
+        }
+        
+
+
+    </script>
+</body>
+
+</html>
