@@ -1,37 +1,41 @@
-name: Deploy DAG to Airflow
+dag:
+  dag_id: example_dag
+  description: Example DAG created from YAML config
+  schedule_interval: "@daily"
+  default_args:
+    owner: "airflow"
+    start_date: "2023-01-01"
+    retries: 1
+    retry_delay: "5m"
 
-on:
-  push:
-    paths:
-      - 'configurations/*.yaml'
+operators:
+  - id: start_task
+    type: BashOperator
+    bash_command: "echo 'Starting the DAG'"
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  - id: python_task
+    type: PythonOperator
+    python_callable: "lambda: print('Running Python Task')"
+    op_args: []
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+  - id: end_task
+    type: BashOperator
+    bash_command: "echo 'Ending the DAG'"
+    dependencies: 
+      - python_task
 
-    - name: Set up Python
-      uses: actions/setup-python@v2
-      with:
-        python-version: '3.8'
+user_config:
+  dag:
+    schedule_interval: "@hourly"
+    default_args:
+      retries: 2
+      retry_delay: "10m"
+  operators:
+    - id: python_task
+      type: PythonOperator
+      python_callable: "lambda: print('Running Python Task with user config')"
+      op_args: []
 
-    - name: Install dependencies
-      run: pip install pyyaml boto3 apache-airflow
-
-    - name: Generate DAG files
-      run: |
-        mkdir -p generated_dags
-        python dag_factory.py configurations generated_dags
-
-    - name: Upload DAGs to S3
-      run: |
-        python s3_uploader.py ${{ secrets.AWS_S3_BUCKET }} generated_dags dags
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
 
 import os
@@ -127,5 +131,42 @@ def generate_dags(config_directory):
 if __name__ == "__main__":
     config_directory = '/usr/local/airflow/dags/'  # Adjust the path as needed
     generate_dags(config_directory)
+
+
+
+name: Deploy DAG to Airflow
+
+on:
+  push:
+    paths:
+      - 'configurations/*.yaml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.8'
+
+    - name: Install dependencies
+      run: pip install pyyaml boto3 apache-airflow
+
+    - name: Generate DAG files
+      run: |
+        mkdir -p generated_dags
+        python dag_factory.py configurations generated_dags
+
+    - name: Upload DAGs to S3
+      run: |
+        python s3_uploader.py ${{ secrets.AWS_S3_BUCKET }} generated_dags dags
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
 
