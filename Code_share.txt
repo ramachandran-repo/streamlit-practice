@@ -79,7 +79,25 @@ def create_dag(dag_id, config_path):
             if dep in tasks:
                 tasks[dep] >> tasks[op_id]
 
-    return dag
+    return dag, tasks
+
+def generate_dag_file(dag_id, dag, tasks, output_directory):
+    dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
+    with open(dag_file_path, 'w') as f:
+        f.write("from airflow import DAG\n")
+        f.write("from airflow.operators.bash import BashOperator\n")
+        f.write("from airflow.operators.python import PythonOperator\n")
+        f.write("from datetime import datetime, timedelta\n\n")
+        f.write(f"default_args = {dag.default_args}\n\n")
+        f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
+        for task_id, task in tasks.items():
+            if isinstance(task, BashOperator):
+                f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command='{task.bash_command}', retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+            elif isinstance(task, PythonOperator):
+                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={task.python_callable}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+        for task_id, task in tasks.items():
+            for downstream_task in task.downstream_task_ids:
+                f.write(f"{task_id} >> {downstream_task}\n")
 
 def generate_dags(config_directory, output_directory):
     os.makedirs(output_directory, exist_ok=True)
@@ -87,18 +105,10 @@ def generate_dags(config_directory, output_directory):
         if config_file.endswith('.yaml'):
             config_path = os.path.join(config_directory, config_file)
             dag_id = os.path.splitext(config_file)[0]
-            dag = create_dag(dag_id, config_path)
-            dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
-            with open(dag_file_path, 'w') as f:
-                f.write(f"from airflow import DAG\n")
-                f.write(f"from airflow.operators.bash import BashOperator\n")
-                f.write(f"from airflow.operators.python import PythonOperator\n")
-                f.write(f"from datetime import datetime, timedelta\n\n")
-                f.write(f"default_args = {dag.default_args}\n\n")
-                f.write(f"dag = {repr(dag)}\n\n")
-                for task in dag.tasks:
-                    f.write(f"{task.task_id} = {repr(task)}\n")
-                for task in dag.tasks:
-                    for downstream_task in task.downstream_task_ids:
-                        f.write(f"{task.task_id} >> {downstream_task}\n")
-    print(f"DAG files have been generated in {output_directory}")
+            dag, tasks = create_dag(dag_id, config_path)
+            generate_dag_file(dag_id, dag, tasks, output_directory)
+
+if __name__ == "__main__":
+    config_directory = '/usr/local/airflow/dags/configurations/'  # Adjust the path as needed
+    output_directory = '/usr/local/airflow/dags/generated_dags/'  # Adjust the path as needed
+    generate_dags(config_directory, output_directory)
