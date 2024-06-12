@@ -45,7 +45,8 @@ def create_task(dag, operator):
     if op_type == 'BashOperator':
         return BashOperator(bash_command=operator['bash_command'], **task_params)
     elif op_type == 'PythonOperator':
-        return PythonOperator(python_callable=eval(operator['python_callable']), op_args=operator.get('op_args', []), **task_params)
+        python_callable = eval(operator['python_callable'])
+        return PythonOperator(python_callable=python_callable, op_args=operator.get('op_args', []), **task_params)
     else:
         raise AirflowException(f"Unsupported operator type: {op_type}")
 
@@ -98,6 +99,11 @@ def serialize_default_args(default_args):
     args_str += "}"
     return args_str
 
+def serialize_python_callable(python_callable):
+    if callable(python_callable):
+        return f"{python_callable.__name__}"
+    return repr(python_callable)
+
 def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
     dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
     with open(dag_file_path, 'w') as f:
@@ -113,7 +119,7 @@ def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
             if isinstance(task, BashOperator):
                 f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
             elif isinstance(task, PythonOperator):
-                python_callable_str = ast.dump(ast.parse(task.python_callable.__code__.co_consts[0]))
+                python_callable_str = serialize_python_callable(task.python_callable)
                 f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_str}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
         
         for task_id, task in tasks.items():
