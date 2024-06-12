@@ -92,9 +92,9 @@ def generate_dag_file(dag_id, dag, tasks, output_directory):
         f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
         for task_id, task in tasks.items():
             if isinstance(task, BashOperator):
-                f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command='{task.bash_command}', retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+                f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
             elif isinstance(task, PythonOperator):
-                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={task.python_callable}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={task.python_callable.__name__}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
         for task_id, task in tasks.items():
             for downstream_task in task.downstream_task_ids:
                 f.write(f"{task_id} >> {downstream_task}\n")
