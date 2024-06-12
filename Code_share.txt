@@ -86,7 +86,10 @@ def serialize_default_args(default_args):
     args_str = "{\n"
     for key, value in default_args.items():
         if isinstance(value, datetime):
-            value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second}, tzinfo=pytz.{value.tzinfo.zone})"
+            if value.tzinfo is not None:
+                value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second}, tzinfo=pytz.{value.tzinfo.zone})"
+            else:
+                value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second})"
         elif isinstance(value, timedelta):
             value_str = f"timedelta(days={value.days}, seconds={value.seconds})"
         else:
@@ -110,9 +113,8 @@ def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
             if isinstance(task, BashOperator):
                 f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
             elif isinstance(task, PythonOperator):
-                # Safely serialize the python_callable for lambdas and functions
-                python_callable_code = task.python_callable.__code__
-                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_code}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+                python_callable_str = ast.dump(ast.parse(task.python_callable.__code__.co_consts[0]))
+                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_str}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
         
         for task_id, task in tasks.items():
             for downstream_task in task.downstream_task_ids:
