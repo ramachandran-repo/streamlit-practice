@@ -99,12 +99,12 @@ def serialize_default_args(default_args):
     args_str += "}"
     return args_str
 
-def serialize_python_callable(python_callable):
-    if callable(python_callable):
-        return f"{python_callable.__name__}"
-    return repr(python_callable)
+def serialize_python_callable(operator):
+    if 'python_callable' in operator:
+        return f"{operator['id']}_callable"
+    return None
 
-def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
+def generate_dag_file(dag_id, dag, tasks, default_args, output_directory, operators_config):
     dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
     with open(dag_file_path, 'w') as f:
         f.write("from airflow import DAG\n")
@@ -112,14 +112,20 @@ def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
         f.write("from airflow.operators.python import PythonOperator\n")
         f.write("from datetime import datetime, timedelta\n")
         f.write("import pytz\n\n")
-        f.write(f"default_args = {serialize_default_args(default_args)}\n\n")
+        
+        for operator in operators_config:
+            callable_code = serialize_python_callable(operator)
+            if callable_code:
+                f.write(f"{callable_code} = {operator['python_callable']}\n")
+        
+        f.write(f"\ndefault_args = {serialize_default_args(default_args)}\n\n")
         f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
         
         for task_id, task in tasks.items():
             if isinstance(task, BashOperator):
                 f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
             elif isinstance(task, PythonOperator):
-                python_callable_str = serialize_python_callable(task.python_callable)
+                python_callable_str = serialize_python_callable({'python_callable': task.python_callable.__name__, 'id': task_id})
                 f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_str}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
         
         for task_id, task in tasks.items():
@@ -133,7 +139,10 @@ def generate_dags(config_directory, output_directory):
             config_path = os.path.join(config_directory, config_file)
             dag_id = os.path.splitext(config_file)[0]
             dag, tasks, default_args = create_dag(dag_id, config_path)
-            generate_dag_file(dag_id, dag, tasks, default_args, output_directory)
+            with open(config_path, 'r') as file:
+                config = yaml.safe_load(file)
+            operators_config = config.get('operators', [])
+            generate_dag_file(dag_id, dag, tasks, default_args, output_directory, operators_config)
 
 if __name__ == "__main__":
     config_directory = '/usr/local/airflow/dags/configurations/'  # Adjust the path as needed
