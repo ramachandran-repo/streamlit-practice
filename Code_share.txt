@@ -1,0 +1,192 @@
+name: Deploy DAG to Airflow
+
+on:
+  push:
+    paths:
+      - 'configurations/*.yaml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.8'
+
+    - name: Install dependencies
+      run: pip install pyyaml boto3 apache-airflow
+
+    - name: Generate DAG files
+      run: |
+        mkdir -p generated_dags
+        python -m dag_factory.dag_generator configurations generated_dags
+
+    - name: Upload DAGs to S3
+      run: |
+        python -m dag_factory.s3_uploader ${{ secrets.AWS_S3_BUCKET }} generated_dags dags
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+
+init
+
+from .dag_generator import generate_dags
+from .s3_uploader import upload_to_s3
+
+s3 upload
+
+import boto3
+import os
+
+def upload_to_s3(bucket_name, local_directory, s3_directory):
+    s3_client = boto3.client('s3')
+    for root, dirs, files in os.walk(local_directory):
+        for file in files:
+            local_path = os.path.join(root, file)
+            relative_path = os.path.relpath(local_path, local_directory)
+            s3_path = os.path.join(s3_directory, relative_path).replace("\\", "/")
+
+            s3_client.upload_file(local_path, bucket_name, s3_path)
+            print(f"Uploaded {local_path} to s3://{bucket_name}/{s3_path}")
+
+
+
+main
+
+
+import yaml
+import os
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+from airflow.exceptions import AirflowException
+
+def merge_configs(default_config, user_config):
+    """
+    Merge user configuration into the default configuration.
+    """
+    def recursive_merge(d, u):
+        for k, v in u.items():
+            if isinstance(v, dict):
+                d[k] = recursive_merge(d.get(k, {}), v)
+            else:
+                d[k] = v
+        return d
+
+    return recursive_merge(default_config, user_config)
+
+def create_dag(dag_id, config_path):
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
+
+    # Extract default and user configs
+    default_config = config.get('dag', {})
+    user_config = config.get('user_config', {}).get('dag', {})
+
+    # Merge configs
+    final_config = merge_configs(default_config, user_config)
+
+    # Create default_args
+    default_args = final_config.get('default_args', {})
+    if 'start_date' in default_args:
+        default_args['start_date'] = datetime.strptime(default_args['start_date'], '%Y-%m-%d')
+    if 'retry_delay' in default_args:
+        default_args['retry_delay'] = timedelta(minutes=int(default_args['retry_delay'].replace('m', '')))
+
+    # Initialize DAG
+    dag = DAG(
+        dag_id=dag_id,
+        description=final_config.get('description', 'A simple example DAG'),
+        schedule_interval=final_config.get('schedule_interval', '@daily'),
+        default_args=default_args,
+        catchup=False  # Example additional argument
+    )
+
+    # Extract operators configs
+    operators_config = config.get('operators', [])
+    user_operators_config = config.get('user_config', {}).get('operators', [])
+    operators_config.extend(user_operators_config)
+
+    # Create tasks
+    tasks = {}
+    for operator in operators_config:
+        op_type = operator.get('type')
+        op_id = operator.get('id')
+
+        if not op_type or not op_id:
+            raise AirflowException(f"Operator configuration is missing 'type' or 'id': {operator}")
+
+        if op_type == 'BashOperator':
+            task = BashOperator(
+                task_id=op_id,
+                bash_command=operator['bash_command'],
+                retries=operator.get('retries', 1),
+                retry_delay=timedelta(minutes=int(operator.get('retry_delay', '5m').replace('m', ''))),
+                dag=dag
+            )
+
+        elif op_type == 'PythonOperator':
+            task = PythonOperator(
+                task_id=op_id,
+                python_callable=eval(operator['python_callable']),  # Note: eval can be dangerous, use with caution
+                op_args=operator.get('op_args', []),
+                retries=operator.get('retries', 1),
+                retry_delay=timedelta(minutes=int(operator.get('retry_delay', '5m').replace('m', ''))),
+                dag=dag
+            )
+
+        tasks[op_id] = task
+
+    # Set task dependencies (if any)
+    for operator in operators_config:
+        op_id = operator['id']
+        dependencies = operator.get('dependencies', [])
+        for dep in dependencies:
+            if dep in tasks:
+                tasks[dep] >> tasks[op_id]
+
+    return dag
+
+def generate_dags(config_directory, output_directory):
+    os.makedirs(output_directory, exist_ok=True)
+    for config_file in os.listdir(config_directory):
+        if config_file.endswith('.yaml'):
+            config_path = os.path.join(config_directory, config_file)
+            dag_id = os.path.splitext(config_file)[0]
+            dag = create_dag(dag_id, config_path)
+            dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
+            with open(dag_file_path, 'w') as f:
+                f.write(f"from airflow import DAG\n")
+                f.write(f"from airflow.operators.bash import BashOperator\n")
+                f.write(f"from airflow.operators.python import PythonOperator\n")
+                f.write(f"from datetime import datetime, timedelta\n\n")
+                f.write(f"default_args = {dag.default_args}\n\n")
+                f.write(f"dag = {repr(dag)}\n\n")
+                for task in dag.tasks:
+                    f.write(f"{task.task_id} = {repr(task)}\n")
+                for task in dag.tasks:
+                    for downstream_task in task.downstream_task_ids:
+                        f.write(f"{task.task_id} >> {downstream_task}\n")
+    print(f"DAG files have been generated in {output_directory}")
+
+
+folder structure 
+
+
+dag_factory/
+├── __init__.py
+├── dag_generator.py
+├── s3_uploader.py
+└── utils.py
+.github/
+├── workflows/
+│   └── deploy_dag.yml
+configurations/
+│   ├── example_dag.yaml
