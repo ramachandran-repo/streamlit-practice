@@ -1,26 +1,17 @@
 import os
 import yaml
-import json
-import boto3
-from jinja2 import Template
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator, BranchPythonOperator
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from airflow.providers.amazon.aws.operators.ecs import ECSOperator
+from airflow.operators.python import PythonOperator
+from airflow.exceptions import AirflowException
 import pytz
-
-def invoke_lambda(lambda_function_name, payload):
-    client = boto3.client('lambda')
-    response = client.invoke(
-        FunctionName=lambda_function_name,
-        InvocationType='RequestResponse',
-        Payload=json.dumps(payload)
-    )
-    return json.loads(response['Payload'].read().decode('utf-8'))
+from jinja2 import Template, Environment, FileSystemLoader
 
 def merge_configs(default_config, user_config):
+    """
+    Merge user configuration into the default configuration.
+    """
     def recursive_merge(d, u):
         for k, v in u.items():
             if isinstance(v, dict):
@@ -28,6 +19,7 @@ def merge_configs(default_config, user_config):
             else:
                 d[k] = v
         return d
+
     return recursive_merge(default_config, user_config)
 
 def parse_default_args(default_args):
@@ -37,11 +29,10 @@ def parse_default_args(default_args):
         default_args['retry_delay'] = timedelta(minutes=int(default_args['retry_delay'].replace('m', '')))
     return default_args
 
-def load_operator_template(operator_type):
-    template_path = f'dags/operator_templates/{operator_type}.yaml'
-    with open(template_path, 'r') as file:
-        template = yaml.safe_load(file)
-    return template['template']
+def load_template(template_name):
+    template_dir = 'path/to/operator_templates'  # Adjust the path as needed
+    env = Environment(loader=FileSystemLoader(template_dir))
+    return env.get_template(template_name)
 
 def create_task(dag, operator):
     op_type = operator.get('type')
@@ -50,24 +41,16 @@ def create_task(dag, operator):
     if not op_type or not op_id:
         raise AirflowException(f"Operator configuration is missing 'type' or 'id': {operator}")
 
-    template_str = load_operator_template(op_type)
-    template = Template(template_str)
-    task_str = template.render(**operator, dag=dag)
-    task = eval(task_str)
-    return task
+    template = load_template(f"{op_type}.j2")
+    task_code = template.render(operator=operator, dag=dag)
+    
+    local_vars = {}
+    exec(task_code, globals(), local_vars)
+    return local_vars[op_id]
 
 def create_dag(dag_id, config_path):
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
-
-    # Invoke the intelligence module (Lambda function) to determine resources
-    lambda_function_name = "my_intelligence_lambda"
-    payload = {"config": config}
-    intelligence_output = invoke_lambda(lambda_function_name, payload)
-
-    # Merge the intelligence output with the config
-    intelligence_config = yaml.safe_load(intelligence_output)
-    config = merge_configs(config, intelligence_config)
 
     default_config = config.get('dag', {})
     user_config = config.get('user_config', {}).get('dag', {})
@@ -96,53 +79,61 @@ def create_dag(dag_id, config_path):
             if dep in tasks:
                 tasks[dep] >> tasks[op_id]
 
-    return dag
+    return dag, tasks, default_args
 
-def write_dag_to_file(dag, dag_id, output_directory):
+def serialize_default_args(default_args):
+    args_str = "{\n"
+    for key, value in default_args.items():
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second}, tzinfo=pytz.{value.tzinfo.zone})"
+            else:
+                value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second})"
+        elif isinstance(value, timedelta):
+            value_str = f"timedelta(days={value.days}, seconds={value.seconds})"
+        else:
+            value_str = repr(value)
+        args_str += f"    '{key}': {value_str},\n"
+    args_str += "}"
+    return args_str
+
+def serialize_python_callable(python_callable):
+    if callable(python_callable):
+        return f"{python_callable.__name__}"
+    return repr(python_callable)
+
+def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
     dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
     with open(dag_file_path, 'w') as f:
-        f.write(f"from airflow import DAG\n")
-        f.write(f"from airflow.operators.bash import BashOperator\n")
-        f.write(f"from airflow.operators.python import PythonOperator, BranchPythonOperator\n")
-        f.write(f"from airflow.providers.amazon.aws.operators.ecs import ECSOperator\n")
-        f.write(f"from datetime import datetime, timedelta\n")
-        f.write(f"import pytz\n\n")
-
-        # Serialize the DAG
-        f.write(f"default_args = {dag.default_args}\n")
+        f.write("from airflow import DAG\n")
+        f.write("from airflow.operators.bash import BashOperator\n")
+        f.write("from airflow.operators.python import PythonOperator\n")
+        f.write("from datetime import datetime, timedelta\n")
+        f.write("import pytz\n\n")
+        f.write(f"default_args = {serialize_default_args(default_args)}\n\n")
         f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
-
-        for task in dag.tasks:
-            f.write(f"{task.task_id} = {task.__class__.__name__}(\n")
-            f.write(f"    task_id='{task.task_id}',\n")
-            f.write(f"    {task.__class__.__name__.lower()}_command='{task.bash_command}'" if isinstance(task, BashOperator) else f"    python_callable={task.python_callable},\n")
-            f.write(f"    retries={task.retries},\n")
-            f.write(f"    retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}),\n")
-            f.write(f"    dag=dag\n")
-            f.write(f")\n\n")
-
-        for task in dag.tasks:
+        
+        for task_id, task in tasks.items():
+            if isinstance(task, BashOperator):
+                f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+            elif isinstance(task, PythonOperator):
+                python_callable_str = serialize_python_callable(task.python_callable)
+                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_str}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+        
+        for task_id, task in tasks.items():
             for downstream_task in task.downstream_task_ids:
-                f.write(f"{task.task_id} >> {downstream_task}\n")
+                f.write(f"{task_id} >> {downstream_task}\n")
 
-def generate_dags_from_s3(bucket_name, config_prefix, output_directory):
-    s3_hook = S3Hook(aws_conn_id='aws_default')
-    keys = s3_hook.list_keys(bucket_name=bucket_name, prefix=config_prefix)
-
+def generate_dags(config_directory, output_directory):
     os.makedirs(output_directory, exist_ok=True)
-    for key in keys:
-        if key.endswith('.yaml'):
-            config_path = s3_hook.download_file(key, bucket_name, '/tmp')
-            dag_id = os.path.splitext(os.path.basename(key))[0]
-            dag = create_dag(dag_id, config_path)
-            write_dag_to_file(dag, dag_id, output_directory)
-
-def main():
-    bucket_name = 'your-bucket-name'  # Replace with your S3 bucket name
-    config_prefix = 'dags/generated/'  # Prefix for generated DAGs
-    output_directory = '/tmp/generated_dags'  # Local directory to write generated DAGs
-
-    generate_dags_from_s3(bucket_name, config_prefix, output_directory)
+    for config_file in os.listdir(config_directory):
+        if config_file.endswith('.yaml'):
+            config_path = os.path.join(config_directory, config_file)
+            dag_id = os.path.splitext(config_file)[0]
+            dag, tasks, default_args = create_dag(dag_id, config_path)
+            generate_dag_file(dag_id, dag, tasks, default_args, output_directory)
 
 if __name__ == "__main__":
-    main()
+    config_directory = '/usr/local/airflow/dags/configurations/'  # Adjust the path as needed
+    output_directory = '/usr/local/airflow/dags/generated_dags/'  # Adjust the path as needed
+    generate_dags(config_directory, output_directory)
