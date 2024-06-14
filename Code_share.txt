@@ -2,16 +2,11 @@ import os
 import yaml
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.bash import BashOperator
-from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
 import pytz
 from jinja2 import Template, Environment, FileSystemLoader
 
 def merge_configs(default_config, user_config):
-    """
-    Merge user configuration into the default configuration.
-    """
     def recursive_merge(d, u):
         for k, v in u.items():
             if isinstance(v, dict):
@@ -19,7 +14,6 @@ def merge_configs(default_config, user_config):
             else:
                 d[k] = v
         return d
-
     return recursive_merge(default_config, user_config)
 
 def parse_default_args(default_args):
@@ -114,11 +108,15 @@ def generate_dag_file(dag_id, dag, tasks, default_args, output_directory):
         f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
         
         for task_id, task in tasks.items():
-            if isinstance(task, BashOperator):
-                f.write(f"{task_id} = BashOperator(task_id='{task.task_id}', bash_command=\"{task.bash_command}\", retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
-            elif isinstance(task, PythonOperator):
-                python_callable_str = serialize_python_callable(task.python_callable)
-                f.write(f"{task_id} = PythonOperator(task_id='{task.task_id}', python_callable={python_callable_str}, op_args={task.op_args}, retries={task.retries}, retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}), dag=dag)\n")
+            f.write(f"{task_id} = {task.__class__.__name__}(task_id='{task.task_id}', ")
+            for key, value in task.params.items():
+                if isinstance(value, str):
+                    f.write(f"{key}='{value}', ")
+                elif isinstance(value, timedelta):
+                    f.write(f"{key}=timedelta(seconds={value.total_seconds()}), ")
+                else:
+                    f.write(f"{key}={value}, ")
+            f.write(f"dag=dag)\n")
         
         for task_id, task in tasks.items():
             for downstream_task in task.downstream_task_ids:
@@ -137,3 +135,27 @@ if __name__ == "__main__":
     config_directory = '/usr/local/airflow/dags/configurations/'  # Adjust the path as needed
     output_directory = '/usr/local/airflow/dags/generated_dags/'  # Adjust the path as needed
     generate_dags(config_directory, output_directory)
+
+
+
+
+
+{{ operator.id }} = BashOperator(
+    task_id='{{ operator.id }}',
+    bash_command='{{ operator.bash_command }}',
+    retries={{ operator.retries | default(1) }},
+    retry_delay=timedelta(minutes={{ operator.retry_delay | default('5m') | replace('m', '') }}),
+    dag=dag
+)
+
+
+{{ operator.id }} = PythonOperator(
+    task_id='{{ operator.id }}',
+    python_callable={{ operator.python_callable }},
+    op_args={{ operator.op_args | default([]) }},
+    retries={{ operator.retries | default(1) }},
+    retry_delay=timedelta(minutes={{ operator.retry_delay | default('5m') | replace('m', '') }}),
+    dag=dag
+)
+
+
