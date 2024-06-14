@@ -38,7 +38,7 @@ def parse_default_args(default_args):
     return default_args
 
 def load_operator_template(operator_type):
-    template_path = f'dag_generator/operator_templates/{operator_type}.yaml'
+    template_path = f'dags/operator_templates/{operator_type}.yaml'
     with open(template_path, 'r') as file:
         template = yaml.safe_load(file)
     return template['template']
@@ -98,22 +98,51 @@ def create_dag(dag_id, config_path):
 
     return dag
 
-def generate_dags_from_s3(bucket_name, config_prefix):
+def write_dag_to_file(dag, dag_id, output_directory):
+    dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
+    with open(dag_file_path, 'w') as f:
+        f.write(f"from airflow import DAG\n")
+        f.write(f"from airflow.operators.bash import BashOperator\n")
+        f.write(f"from airflow.operators.python import PythonOperator, BranchPythonOperator\n")
+        f.write(f"from airflow.providers.amazon.aws.operators.ecs import ECSOperator\n")
+        f.write(f"from datetime import datetime, timedelta\n")
+        f.write(f"import pytz\n\n")
+
+        # Serialize the DAG
+        f.write(f"default_args = {dag.default_args}\n")
+        f.write(f"dag = DAG(dag_id='{dag.dag_id}', default_args=default_args, description='{dag.description}', schedule_interval='{dag.schedule_interval}', catchup={dag.catchup})\n\n")
+
+        for task in dag.tasks:
+            f.write(f"{task.task_id} = {task.__class__.__name__}(\n")
+            f.write(f"    task_id='{task.task_id}',\n")
+            f.write(f"    {task.__class__.__name__.lower()}_command='{task.bash_command}'" if isinstance(task, BashOperator) else f"    python_callable={task.python_callable},\n")
+            f.write(f"    retries={task.retries},\n")
+            f.write(f"    retry_delay=timedelta(minutes={task.retry_delay.seconds // 60}),\n")
+            f.write(f"    dag=dag\n")
+            f.write(f")\n\n")
+
+        for task in dag.tasks:
+            for downstream_task in task.downstream_task_ids:
+                f.write(f"{task.task_id} >> {downstream_task}\n")
+
+def generate_dags_from_s3(bucket_name, config_prefix, output_directory):
     s3_hook = S3Hook(aws_conn_id='aws_default')
     keys = s3_hook.list_keys(bucket_name=bucket_name, prefix=config_prefix)
 
+    os.makedirs(output_directory, exist_ok=True)
     for key in keys:
         if key.endswith('.yaml'):
             config_path = s3_hook.download_file(key, bucket_name, '/tmp')
             dag_id = os.path.splitext(os.path.basename(key))[0]
             dag = create_dag(dag_id, config_path)
-            globals()[dag_id] = dag
+            write_dag_to_file(dag, dag_id, output_directory)
 
 def main():
     bucket_name = 'your-bucket-name'  # Replace with your S3 bucket name
     config_prefix = 'dags/generated/'  # Prefix for generated DAGs
+    output_directory = '/tmp/generated_dags'  # Local directory to write generated DAGs
 
-    generate_dags_from_s3(bucket_name, config_prefix)
+    generate_dags_from_s3(bucket_name, config_prefix, output_directory)
 
 if __name__ == "__main__":
     main()
