@@ -1,229 +1,47 @@
-import os
-from datetime import datetime, timedelta
-import yaml
-import boto3
+Certainly! Here's a table comparing different methods to trigger an MWAA DAG when a DAG file is uploaded to S3:
 
-class ConfigLoader:
-    @staticmethod
-    def load_config(config_path):
-        with open(config_path, 'r') as file:
-            return yaml.safe_load(file)
+| Feature                      | Manual Trigger via UI         | Scheduled Trigger            | CLI/API Trigger               | Monitoring DAG                | AWS Lambda (S3 Event)         |
+|------------------------------|-------------------------------|------------------------------|-------------------------------|-------------------------------|-------------------------------|
+| **Automation**               | No                            | Yes                          | Yes                           | Yes                           | Yes                           |
+| **Immediate Trigger**        | No                            | No                           | Yes                           | No (depends on `poke_interval`) | Yes                           |
+| **Resource Usage**           | Low                           | Low                          | Low                           | Medium (depends on polling)   | Low                           |
+| **Setup Complexity**         | Low                           | Medium                       | Medium                        | Medium                        | High                          |
+| **Maintenance Effort**       | Low                           | Medium                       | Medium                        | Medium                        | High                          |
+| **Flexibility**              | Low                           | Medium                       | High                          | High                          | Medium                        |
+| **External Dependencies**    | No                            | No                           | No                            | No                            | Yes (AWS services)            |
+| **Latency**                  | High                          | High                         | Low                           | Medium                        | Low                           |
+| **Scalability**              | High                          | High                         | High                          | Medium                        | High                          |
+| **Permissions Management**   | Low                           | Medium                       | Medium                        | Medium                        | High                          |
+| **Integration Effort**       | Low                           | Medium                       | Medium                        | Medium                        | High                          |
+| **Use Case Suitability**     | Ad-hoc Execution              | Regular Intervals            | Programmatic Execution        | Continuous Monitoring          | Event-Driven Execution        |
 
-class IntelligenceProgram:
-    @staticmethod
-    def get_s3_folder_size(s3_path):
-        s3 = boto3.client('s3')
-        bucket_name = s3_path.split('/')[2]
-        prefix = '/'.join(s3_path.split('/')[3:])
-        total_size = 0
+### Detailed Considerations
 
-        paginator = s3.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-            for obj in page.get('Contents', []):
-                total_size += obj['Size']
+- **Manual Trigger via UI:**
+  - Suitable for testing or occasional ad-hoc runs.
+  - No automation, requires manual intervention.
 
-        return total_size / (1024 * 1024)  # Convert bytes to MB
+- **Scheduled Trigger:**
+  - Best for regular, interval-based DAG executions.
+  - Cannot respond immediately to DAG uploads.
 
-    @classmethod
-    def generate_operator_details(cls, task, default_input_paths, default_output_path):
-        if 'size' not in task:
-            input_paths = task.get('input_data_paths', default_input_paths)
-            output_path = task.get('output_data_path', default_output_path)
+- **CLI/API Trigger:**
+  - Good for programmatic and automated workflows.
+  - Requires integration with CI/CD pipelines or external scripts.
 
-            input_size = sum(cls.get_s3_folder_size(path) for path in input_paths)
-            output_size = cls.get_s3_folder_size(output_path)
-            task['size'] = input_size + output_size
+- **Monitoring DAG:**
+  - Directly managed within Airflow, uses sensors to monitor DAG directory.
+  - Involves continuous polling, which can impact resource usage and latency based on `poke_interval`.
 
-        operator = task.get('operator')
-        if not operator:
-            if task['language'] in ['python', 'R']:
-                operator = 'ECSOperator'
-            elif task['language'] == 'pyspark':
-                operator = 'GlueJobOperator'
-            else:
-                raise ValueError(f"Unsupported language: {task['language']}")
+- **AWS Lambda (S3 Event):**
+  - Ideal for immediate, event-driven DAG triggers.
+  - Requires setup and maintenance of AWS Lambda and S3 event notifications.
+  - Provides low-latency and scalable solution but involves higher complexity in integration and permissions management.
 
-        if operator == 'PythonOperator':
-            return {
-                'id': task['id'],
-                'type': 'PythonOperator',
-                'python_callable': task['python_callable'],
-                'retries': 2,
-                'retry_delay': '10m',
-                'import_path': 'from airflow.operators.python import PythonOperator'
-            }
-        elif operator == 'ECSOperator':
-            return {
-                'id': task['id'],
-                'type': 'ECSOperator',
-                'cluster': 'your-cluster-name',
-                'task_definition': 'your-task-definition',
-                'container_name': 'your-container-name',
-                'aws_conn_id': 'your-aws-connection-id',
-                'region': 'your-region',
-                'overrides': {
-                    'containerOverrides': [{
-                        'name': 'your-container-name',
-                        'command': ['python', task['python_callable']]
-                    }]
-                },
-                'retries': 2,
-                'retry_delay': '10m',
-                'import_path': 'from airflow.providers.amazon.aws.operators.ecs import ECSOperator'
-            }
-        elif operator == 'GlueJobOperator':
-            return {
-                'id': task['id'],
-                'type': 'GlueJobOperator',
-                'job_name': 'example_glue_job',
-                'retries': 1,
-                'retry_delay': '15m',
-                'import_path': 'from airflow.providers.amazon.aws.operators.glue import GlueJobOperator'
-            }
-        elif operator == 'BranchPythonOperator':
-            return {
-                'id': task['id'],
-                'type': 'BranchPythonOperator',
-                'python_callable': task['python_callable'],
-                'params': task['params'],
-                'retries': 2,
-                'retry_delay': '10m',
-                'import_path': 'from airflow.operators.python import BranchPythonOperator'
-            }
-        else:
-            raise ValueError(f"Unsupported operator: {operator}")
+### Recommendation
 
-class DAGFactory:
-    def __init__(self, config_loader=ConfigLoader, dag_builder=DAGBuilder, intelligence_program=IntelligenceProgram, s3_uploader=S3Uploader):
-        self.config_loader = config_loader()
-        self.dag_builder = dag_builder()
-        self.intelligence_program = intelligence_program()
-        self.s3_uploader = s3_uploader()
-
-    @staticmethod
-    def merge_configs(default_config, user_config):
-        def recursive_merge(d, u):
-            for k, v in u.items():
-                if isinstance(v, dict):
-                    d[k] = recursive_merge(d.get(k, {}), v)
-                else:
-                    d[k] = v
-            return d
-        return recursive_merge(default_config, user_config)
-
-    @staticmethod
-    def parse_default_args(default_args):
-        if 'start_date' in default_args:
-            default_args['start_date'] = datetime.strptime(default_args['start_date'], '%Y-%m-%d')
-        if 'retry_delay' in default_args:
-            default_args['retry_delay'] = timedelta(minutes=int(default_args['retry_delay'].replace('m', '')))
-        return default_args
-
-    def create_dag(self, dag_id, config_path):
-        config = self.config_loader.load_config(config_path)
-
-        dag_config = config.get('dag', {})
-        tasks_config = config.get('tasks', [])
-        notifications_config = config.get('notifications', {})
-
-        default_input_paths = dag_config.get('input_data_paths', [])
-        default_output_path = dag_config.get('output_data_path', None)
-
-        default_args = self.parse_default_args(dag_config.get('default_args', {}))
-
-        required_imports = set()
-        task_codes = []
-
-        for task in tasks_config:
-            operator_details = self.intelligence_program.generate_operator_details(task, default_input_paths, default_output_path)
-            task_code = self.dag_builder.create_task_code(operator_details)
-            task_codes.append(task_code)
-            required_imports.add(operator_details['import_path'])
-
-        return dag_config, default_args, task_codes, required_imports, notifications_config, dag_id
-
-    def generate_dag_file(self, dag_config, default_args, task_codes, required_imports, notifications_config, output_directory):
-        dag_id = dag_config['dag_id']
-        dag_file_path = os.path.join(output_directory, f"{dag_id}.py")
-        
-        with open(dag_file_path, 'w') as f:
-            # Write necessary imports
-            f.write("from airflow import DAG\n")
-            for imp in required_imports:
-                f.write(f"{imp}\n")
-            f.write("from datetime import datetime, timedelta\n")
-            f.write("import pytz\n\n")
-
-            # Write default_args
-            f.write(f"default_args = {self.serialize_default_args(default_args)}\n\n")
-            
-            # Write DAG definition
-            f.write(f"dag = DAG(dag_id='{dag_id}', default_args=default_args, description='{dag_config['description']}', schedule_interval='{dag_config['schedule_interval']}', catchup={dag_config.get('catchup', False)})\n\n")
-            
-            # Write task definitions
-            for task_code in task_codes:
-                f.write(f"{task_code}\n\n")
-
-            # Write task dependencies
-            for task in task_codes:
-                for downstream_task in task.downstream_task_ids:
-                    f.write(f"{task['id']} >> {downstream_task}\n")
-
-            # Write email notifications if configured
-            email_notifications = notifications_config.get('email', {})
-            if email_notifications:
-                recipients = email_notifications.get('recipients', [])
-                if recipients:
-                    f.write(f"task_failure_email_alert = EmailOperator(\n")
-                    f.write(f"    task_id='task_failure_email_alert',\n")
-                    f.write(f"    to={recipients},\n")
-                    f.write(f"    subject='Airflow Task Failure',\n")
-                    f.write(f"    html_content='Task failure alert',\n")
-                    f.write(f"    retries=1,\n")
-                    f.write(f"    retry_delay=timedelta(minutes=5),\n")
-                    f.write(f"    dag=dag\n")
-                    f.write(f")\n")
-                    for task in task_codes:
-                        f.write(f"{task['id']} >> task_failure_email_alert\n")
-
-        return dag_file_path
-
-    @staticmethod
-    def serialize_default_args(default_args):
-        args_str = "{\n"
-        for key, value in default_args.items():
-            if isinstance(value, datetime):
-                if value.tzinfo is not None:
-                    value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second}, tzinfo=pytz.{value.tzinfo.zone})"
-                else:
-                    value_str = f"datetime({value.year}, {value.month}, {value.day}, {value.hour}, {value.minute}, {value.second})"
-            elif isinstance(value, timedelta):
-                value_str = f"timedelta(days={value.days}, seconds={value.seconds})"
-            else:
-                value_str = repr(value)
-            args_str += f"    '{key}': {value_str},\n"
-        args_str += "}"
-        return args_str
-
-    def main(self, config_directory, output_directory, s3_bucket, s3_path):
-        os.makedirs(output_directory, exist_ok=True)
-        for config_file in os.listdir(config_directory):
-            if config_file.endswith('.yaml'):
-                config_path = os.path.join(config_directory, config_file)
-                dag_id = os.path.splitext(config_file)[0]
-                dag_config, default_args, task_codes, required_imports, notifications_config, dag_id = self.create_dag(dag_id, config_path)
-                dag_file_path = self.generate_dag_file(dag_config, default_args, task_codes, required_imports, notifications_config, output_directory)
-                s3_dag_path = os.path.join(s3_path, f"{dag_id}.py")
-                self.s3_uploader.upload_file_to_s3(dag_file_path, s3_bucket, s3_dag_path)
-                print(f"DAG {dag_id} has been created and uploaded to {s3_dag_path}")
-
-        return dag_id, dag_file_path
-
-if __name__ == "__main__":
-    config_directory = '/usr/local/airflow/dags/configurations/'  # Adjust the path as needed
-    output_directory = '/usr/local/airflow/dags/generated_dags/'  # Adjust the path as needed
-    s3_bucket = 'your-s3-bucket'  # Replace with your S3 bucket name
-    s3_path = 'dags/'  # Replace with your S3 path
-
-    factory = DAGFactory()
-    factory.main(config_directory, output_directory, s3_bucket, s3_path)
+- **AWS Lambda (S3 Event):** Best for immediate and automated triggering upon DAG upload.
+- **Monitoring DAG:** Good for keeping everything within Airflow with customizable monitoring.
+- **CLI/API Trigger:** Suitable for programmatic triggers integrated with external systems.
+- **Scheduled Trigger:** Ideal for regular, interval-based executions.
+- **Manual Trigger via UI:** Useful for testing and manual execution.
