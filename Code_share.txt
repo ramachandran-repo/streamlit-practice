@@ -1,47 +1,31 @@
-Certainly! Here's a table comparing different methods to trigger an MWAA DAG when a DAG file is uploaded to S3:
+import sys
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from awsglue.utils import getResolvedOptions
+from awsglue.transforms import *
 
-| Feature                      | Manual Trigger via UI         | Scheduled Trigger            | CLI/API Trigger               | Monitoring DAG                | AWS Lambda (S3 Event)         |
-|------------------------------|-------------------------------|------------------------------|-------------------------------|-------------------------------|-------------------------------|
-| **Automation**               | No                            | Yes                          | Yes                           | Yes                           | Yes                           |
-| **Immediate Trigger**        | No                            | No                           | Yes                           | No (depends on `poke_interval`) | Yes                           |
-| **Resource Usage**           | Low                           | Low                          | Low                           | Medium (depends on polling)   | Low                           |
-| **Setup Complexity**         | Low                           | Medium                       | Medium                        | Medium                        | High                          |
-| **Maintenance Effort**       | Low                           | Medium                       | Medium                        | Medium                        | High                          |
-| **Flexibility**              | Low                           | Medium                       | High                          | High                          | Medium                        |
-| **External Dependencies**    | No                            | No                           | No                            | No                            | Yes (AWS services)            |
-| **Latency**                  | High                          | High                         | Low                           | Medium                        | Low                           |
-| **Scalability**              | High                          | High                         | High                          | Medium                        | High                          |
-| **Permissions Management**   | Low                           | Medium                       | Medium                        | Medium                        | High                          |
-| **Integration Effort**       | Low                           | Medium                       | Medium                        | Medium                        | High                          |
-| **Use Case Suitability**     | Ad-hoc Execution              | Regular Intervals            | Programmatic Execution        | Continuous Monitoring          | Event-Driven Execution        |
+# Initialize Spark and Glue contexts
+args = getResolvedOptions(sys.argv, ['JOB_NAME', 'INPUT_PATH', 'OUTPUT_PATH'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
 
-### Detailed Considerations
+# Read CSV file
+input_path = args['INPUT_PATH']
+output_path = args['OUTPUT_PATH']
+df = spark.read.option("header", "true").csv(input_path)
 
-- **Manual Trigger via UI:**
-  - Suitable for testing or occasional ad-hoc runs.
-  - No automation, requires manual intervention.
+# Convert headers to uppercase
+df = df.toDF(*[c.upper() for c in df.columns])
 
-- **Scheduled Trigger:**
-  - Best for regular, interval-based DAG executions.
-  - Cannot respond immediately to DAG uploads.
+# Remove duplicates
+df = df.dropDuplicates()
 
-- **CLI/API Trigger:**
-  - Good for programmatic and automated workflows.
-  - Requires integration with CI/CD pipelines or external scripts.
+# Save as Parquet
+df.write.mode('overwrite').parquet(output_path)
 
-- **Monitoring DAG:**
-  - Directly managed within Airflow, uses sensors to monitor DAG directory.
-  - Involves continuous polling, which can impact resource usage and latency based on `poke_interval`.
-
-- **AWS Lambda (S3 Event):**
-  - Ideal for immediate, event-driven DAG triggers.
-  - Requires setup and maintenance of AWS Lambda and S3 event notifications.
-  - Provides low-latency and scalable solution but involves higher complexity in integration and permissions management.
-
-### Recommendation
-
-- **AWS Lambda (S3 Event):** Best for immediate and automated triggering upon DAG upload.
-- **Monitoring DAG:** Good for keeping everything within Airflow with customizable monitoring.
-- **CLI/API Trigger:** Suitable for programmatic triggers integrated with external systems.
-- **Scheduled Trigger:** Ideal for regular, interval-based executions.
-- **Manual Trigger via UI:** Useful for testing and manual execution.
+# Commit job
+job.commit()
