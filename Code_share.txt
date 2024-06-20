@@ -58,3 +58,10 @@ with DAG(
     )
 
     wait_for_new_dag >> wait_for_airflow_to_recognize >> trigger_new_dag
+
+
+
+
+Value = None
+formatted_string = f"The test is {Value if Value is None else f'\"{Value}\"'}"
+print(formatted_string)
