@@ -1,7 +1,6 @@
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
-from airflow.providers.amazon.aws.sensors.s3_key import S3KeySensor
-from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
 from airflow.utils.dates import days_ago
 from airflow.models.dagbag import DagBag
 import time
@@ -10,37 +9,31 @@ import time
 S3_BUCKET = 'your-s3-bucket'
 S3_PREFIX = 'dags/'
 
-def get_new_dag_file(**kwargs):
+def process_new_dag_file(**kwargs):
     ti = kwargs['ti']
-    s3 = S3Hook(aws_conn_id='aws_default')
-    new_files = s3.list_keys(bucket_name=S3_BUCKET, prefix=S3_PREFIX)
-    # Extract the DAG name from the file path
-    if new_files:
-        new_dag_file = new_files[-1]
-        dag_name = new_dag_file.split('/')[-1].replace('.py', '')
-        ti.xcom_push(key='new_dag', value=dag_name)
-    else:
-        raise ValueError("No new DAG files found")
+    s3_object_key = ti.xcom_pull(task_ids='wait_for_new_dag')
 
-def wait_for_dag_in_airflow(**kwargs):
-    ti = kwargs['ti']
-    dag_id = ti.xcom_pull(task_ids='get_new_dag_file', key='new_dag')
+    if not s3_object_key:
+        raise ValueError("No S3 object key provided")
+    
+    dag_name = s3_object_key.split('/')[-1].replace('.py', '')
+
+    # Wait for the DAG to be recognized by Airflow
     retries = 10
     delay = 5
     dag_bag = DagBag()
 
     for _ in range(retries):
-        if dag_id in dag_bag.dags:
-            return True
+        if dag_name in dag_bag.dags:
+            break
         time.sleep(delay)
         dag_bag = DagBag()
-    raise ValueError(f"DAG {dag_id} not found in Airflow after {retries * delay} seconds")
+    else:
+        raise ValueError(f"DAG {dag_name} not found in Airflow after {retries * delay} seconds")
 
-def trigger_new_dag(**kwargs):
-    ti = kwargs['ti']
-    dag_id = ti.xcom_pull(task_ids='get_new_dag_file', key='new_dag')
+    # Trigger the new DAG
     from airflow.api.common.experimental.trigger_dag import trigger_dag
-    trigger_dag(dag_id=dag_id)
+    trigger_dag(dag_id=dag_name)
 
 default_args = {
     'owner': 'airflow',
@@ -50,35 +43,23 @@ default_args = {
 with DAG(
     dag_id='monitor_s3_and_trigger_dag',
     default_args=default_args,
-    schedule_interval=None,
+    schedule_interval='*/10 * * * *',  # This sets the DAG to run every 10 minutes
     catchup=False,
 ) as dag:
 
     wait_for_new_dag = S3KeySensor(
         task_id='wait_for_new_dag',
         bucket_name=S3_BUCKET,
-        bucket_key=f'{S3_PREFIX}*',
+        bucket_key=f'{S3_PREFIX}*.py',
         wildcard_match=True,
         timeout=18 * 60 * 60,
         poke_interval=60,
     )
 
-    get_new_dag_file = PythonOperator(
-        task_id='get_new_dag_file',
-        python_callable=get_new_dag_file,
+    process_new_dag_file = PythonOperator(
+        task_id='process_new_dag_file',
+        python_callable=process_new_dag_file,
         provide_context=True,
     )
 
-    wait_for_airflow_to_recognize = PythonOperator(
-        task_id='wait_for_airflow_to_recognize',
-        python_callable=wait_for_dag_in_airflow,
-        provide_context=True,
-    )
-
-    trigger_new_dag = PythonOperator(
-        task_id='trigger_new_dag',
-        python_callable=trigger_new_dag,
-        provide_context=True,
-    )
-
-    wait_for_new_dag >> get_new_dag_file >> wait_for_airflow_to_recognize >> trigger_new_dag
+    wait_for_new_dag >> process_new_dag_file
