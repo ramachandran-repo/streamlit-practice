@@ -1,7 +1,60 @@
-AIRFLOW__SMTP__SMTP_HOST=email-smtp.us-east-1.amazonaws.com
-AIRFLOW__SMTP__SMTP_STARTTLS=True
-AIRFLOW__SMTP__SMTP_SSL=False
-AIRFLOW__SMTP__SMTP_USER=YOUR_SMTP_USERNAME
-AIRFLOW__SMTP__SMTP_PASSWORD=YOUR_SMTP_PASSWORD
-AIRFLOW__SMTP__SMTP_PORT=587
-AIRFLOW__SMTP__SMTP_MAIL_FROM=YOUR_VERIFIED_EMAIL
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.providers.amazon.aws.sensors.s3_key import S3KeySensor
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
+from airflow.utils.dates import days_ago
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+import time
+
+# Define your S3 bucket and key
+S3_BUCKET = 'your-s3-bucket'
+S3_PREFIX = 'dags/'
+
+def trigger_dag(dag_id, **kwargs):
+    from airflow.api.common.experimental.trigger_dag import trigger_dag
+    trigger_dag(dag_id=dag_id)
+
+def wait_for_dag_creation(dag_id, retries=10, delay=5):
+    from airflow.models.dagbag import DagBag
+    dag_bag = DagBag()
+    
+    for _ in range(retries):
+        if dag_id in dag_bag.dags:
+            return True
+        time.sleep(delay)
+        dag_bag = DagBag()
+    return False
+
+default_args = {
+    'owner': 'airflow',
+    'start_date': days_ago(1),
+}
+
+with DAG(
+    dag_id='monitor_s3_and_trigger_dag',
+    default_args=default_args,
+    schedule_interval=None,
+    catchup=False,
+) as dag:
+
+    wait_for_new_dag = S3KeySensor(
+        task_id='wait_for_new_dag',
+        bucket_name=S3_BUCKET,
+        bucket_key=f'{S3_PREFIX}*',
+        wildcard_match=True,
+        timeout=18 * 60 * 60,
+        poke_interval=60,
+    )
+
+    wait_for_airflow_to_recognize = PythonOperator(
+        task_id='wait_for_airflow_to_recognize',
+        python_callable=wait_for_dag_creation,
+        op_args=['{{ task_instance.xcom_pull(task_ids="wait_for_new_dag") }}'],
+    )
+
+    trigger_new_dag = TriggerDagRunOperator(
+        task_id='trigger_new_dag',
+        trigger_dag_id='{{ task_instance.xcom_pull(task_ids="wait_for_new_dag") }}',
+    )
+
+    wait_for_new_dag >> wait_for_airflow_to_recognize >> trigger_new_dag
