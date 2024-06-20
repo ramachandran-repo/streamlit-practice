@@ -1,31 +1,7 @@
-import sys
-from pyspark.context import SparkContext
-from awsglue.context import GlueContext
-from awsglue.job import Job
-from awsglue.utils import getResolvedOptions
-from awsglue.transforms import *
-
-# Initialize Spark and Glue contexts
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'INPUT_PATH', 'OUTPUT_PATH'])
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args['JOB_NAME'], args)
-
-# Read CSV file
-input_path = args['INPUT_PATH']
-output_path = args['OUTPUT_PATH']
-df = spark.read.option("header", "true").csv(input_path)
-
-# Convert headers to uppercase
-df = df.toDF(*[c.upper() for c in df.columns])
-
-# Remove duplicates
-df = df.dropDuplicates()
-
-# Save as Parquet
-df.write.mode('overwrite').parquet(output_path)
-
-# Commit job
-job.commit()
+AIRFLOW__SMTP__SMTP_HOST=email-smtp.us-east-1.amazonaws.com
+AIRFLOW__SMTP__SMTP_STARTTLS=True
+AIRFLOW__SMTP__SMTP_SSL=False
+AIRFLOW__SMTP__SMTP_USER=YOUR_SMTP_USERNAME
+AIRFLOW__SMTP__SMTP_PASSWORD=YOUR_SMTP_PASSWORD
+AIRFLOW__SMTP__SMTP_PORT=587
+AIRFLOW__SMTP__SMTP_MAIL_FROM=YOUR_VERIFIED_EMAIL
