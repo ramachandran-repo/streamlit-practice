@@ -1,62 +1,26 @@
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.bash_operator import BashOperator
-from airflow.sensors.s3_key_sensor import S3KeySensor
-from airflow.operators.python_operator import PythonOperator
-import os
-import time
+import boto3
+import json
+from airflow.hooks.S3_hook import S3Hook
 
-# Function to extract DAG ID from the file name
-def extract_dag_id(file_key, **kwargs):
-    dag_id = os.path.splitext(os.path.basename(file_key))[0]
-    return dag_id
+def list_new_dag_files(bucket_name, processed_files_key, prefix='dags/'):
+    s3_hook = S3Hook(aws_conn_id='aws_default')
+    s3_client = s3_hook.get_conn()
+    
+    # List all DAG files in the bucket
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+    all_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.py')]
 
-# Define the DAG
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
+    # Load the list of already processed files
+    try:
+        processed_files_obj = s3_client.get_object(Bucket=bucket_name, Key=processed_files_key)
+        processed_files = json.loads(processed_files_obj['Body'].read().decode('utf-8'))
+    except s3_client.exceptions.NoSuchKey:
+        processed_files = []
 
-dag = DAG(
-    'monitor_and_trigger_new_dags',
-    default_args=default_args,
-    description='A DAG to monitor and trigger new DAGs upon upload',
-    schedule_interval=timedelta(minutes=1),
-    catchup=False,
-)
+    # Identify new files
+    new_files = list(set(all_files) - set(processed_files))
 
-# Define the S3KeySensor
-bucket_name = 'your-s3-bucket-name'  # replace with your S3 bucket name
+    # Update the list of processed files
+    s3_client.put_object(Bucket=bucket_name, Key=processed_files_key, Body=json.dumps(all_files))
 
-s3_sensor = S3KeySensor(
-    task_id='check_for_new_dag_file',
-    bucket_key='dags/*.py',  # Use the correct prefix
-    wildcard_match=True,
-    aws_conn_id='aws_default',
-    timeout=600,
-    poke_interval=60,
-    dag=dag,
-)
-
-# Define the PythonOperator to extract the DAG ID
-extract_dag_id_task = PythonOperator(
-    task_id='extract_dag_id',
-    python_callable=extract_dag_id,
-    op_kwargs={'file_key': '{{ task_instance.xcom_pull(task_ids="check_for_new_dag_file") }}'},
-    provide_context=True,
-    dag=dag,
-)
-
-# Define the BashOperator to trigger the DAG
-trigger_dag_task = BashOperator(
-    task_id='trigger_dag',
-    bash_command='airflow dags trigger {{ task_instance.xcom_pull(task_ids="extract_dag_id") }}',
-    dag=dag,
-)
-
-s3_sensor >> extract_dag_id_task >> trigger_dag_task
+    return new_files
