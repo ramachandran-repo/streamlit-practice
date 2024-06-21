@@ -1,16 +1,17 @@
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.python_operator import PythonOperator
+from airflow.operators.bash_operator import BashOperator
 from airflow.sensors.s3_key_sensor import S3KeySensor
-import boto3
+from airflow.operators.python_operator import PythonOperator
+import os
+import time
 
-def trigger_new_dag(dag_id, **kwargs):
-    client = boto3.client('mwaa')
-    client.create_cli_token(Name='mwaa-env-name')  # replace with your MWAA environment name
-    # Construct the Airflow CLI command
-    command = f'airflow dags trigger {dag_id}'
-    client.execute_command(Command=command)
+# Function to extract DAG ID from the file name
+def extract_dag_id(file_key, **kwargs):
+    dag_id = os.path.splitext(os.path.basename(file_key))[0]
+    return dag_id
 
+# Define the DAG
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -22,28 +23,40 @@ default_args = {
 }
 
 dag = DAG(
-    'monitor_new_dags',
+    'monitor_and_trigger_new_dags',
     default_args=default_args,
-    description='A DAG to monitor and trigger new DAGs',
+    description='A DAG to monitor and trigger new DAGs upon upload',
     schedule_interval=timedelta(minutes=1),
     catchup=False,
 )
 
-sensor = S3KeySensor(
-    task_id='check_for_new_dag',
-    bucket_key='s3://my-bucket/dags/new_dag_file.py',  # Specify the S3 path to the new DAG file
+# Define the S3KeySensor
+bucket_name = 'your-s3-bucket-name'  # replace with your S3 bucket name
+
+s3_sensor = S3KeySensor(
+    task_id='check_for_new_dag_file',
+    bucket_key='dags/*.py',  # Use the correct prefix
     wildcard_match=True,
     aws_conn_id='aws_default',
-    timeout=18 * 60 * 60,
+    timeout=600,
     poke_interval=60,
     dag=dag,
 )
 
-trigger = PythonOperator(
-    task_id='trigger_new_dag',
-    python_callable=trigger_new_dag,
-    op_kwargs={'dag_id': 'my_new_dag'},  # Specify the new DAG ID
+# Define the PythonOperator to extract the DAG ID
+extract_dag_id_task = PythonOperator(
+    task_id='extract_dag_id',
+    python_callable=extract_dag_id,
+    op_kwargs={'file_key': '{{ task_instance.xcom_pull(task_ids="check_for_new_dag_file") }}'},
+    provide_context=True,
     dag=dag,
 )
 
-sensor >> trigger
+# Define the BashOperator to trigger the DAG
+trigger_dag_task = BashOperator(
+    task_id='trigger_dag',
+    bash_command='airflow dags trigger {{ task_instance.xcom_pull(task_ids="extract_dag_id") }}',
+    dag=dag,
+)
+
+s3_sensor >> extract_dag_id_task >> trigger_dag_task
