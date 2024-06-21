@@ -1,26 +1,64 @@
 import boto3
-import json
-from airflow.hooks.S3_hook import S3Hook
+from datetime import datetime, timezone, timedelta
+import os
 
-def list_new_dag_files(bucket_name, processed_files_key, prefix='dags/'):
-    s3_hook = S3Hook(aws_conn_id='aws_default')
-    s3_client = s3_hook.get_conn()
-    
-    # List all DAG files in the bucket
+def list_recent_dag_files(bucket_name, prefix='dags/', minutes=10):
+    s3_client = boto3.client('s3')
     response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    all_files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.py')]
+    
+    recent_files = []
+    threshold_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    
+    for obj in response.get('Contents', []):
+        if obj['Key'].endswith('.py') and obj['LastModified'] > threshold_time:
+            recent_files.append(obj['Key'])
+    
+    return recent_files
 
-    # Load the list of already processed files
-    try:
-        processed_files_obj = s3_client.get_object(Bucket=bucket_name, Key=processed_files_key)
-        processed_files = json.loads(processed_files_obj['Body'].read().decode('utf-8'))
-    except s3_client.exceptions.NoSuchKey:
-        processed_files = []
+def trigger_new_dags(bucket_name, minutes=10, **kwargs):
+    recent_files = list_recent_dag_files(bucket_name=bucket_name, minutes=minutes)
+    for file in recent_files:
+        dag_id = os.path.splitext(os.path.basename(file))[0]
+        # Use os.system to trigger the DAG
+        trigger_dag_command = f'airflow dags trigger {dag_id}'
+        os.system(trigger_dag_command)
 
-    # Identify new files
-    new_files = list(set(all_files) - set(processed_files))
 
-    # Update the list of processed files
-    s3_client.put_object(Bucket=bucket_name, Key=processed_files_key, Body=json.dumps(all_files))
 
-    return new_files
+
+
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+
+# Define the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+dag = DAG(
+    'monitor_and_trigger_recent_dags',
+    default_args=default_args,
+    description='A DAG to monitor and trigger new DAGs uploaded in the last 10 minutes',
+    schedule_interval=timedelta(minutes=10),  # Run every 10 minutes
+    catchup=False,
+)
+
+# Define the PythonOperator to trigger the new DAGs
+bucket_name = 'your-s3-bucket-name'  # replace with your S3 bucket name
+
+trigger_dags_task = PythonOperator(
+    task_id='trigger_new_dags',
+    python_callable=trigger_new_dags,
+    op_kwargs={'bucket_name': bucket_name, 'minutes': 10},
+    provide_context=True,
+    dag=dag,
+)
+
+trigger_dags_task
