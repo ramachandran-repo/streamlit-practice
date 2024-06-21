@@ -1,65 +1,49 @@
+from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
-from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
-from airflow.utils.dates import days_ago
-from airflow.models.dagbag import DagBag
-import time
+from airflow.sensors.s3_key_sensor import S3KeySensor
+import boto3
 
-# Define your S3 bucket and key prefix
-S3_BUCKET = 'your-s3-bucket'
-S3_PREFIX = 'dags/'
-
-def process_new_dag_file(**kwargs):
-    ti = kwargs['ti']
-    s3_object_key = ti.xcom_pull(task_ids='wait_for_new_dag')
-
-    if not s3_object_key:
-        raise ValueError("No S3 object key provided")
-    
-    dag_name = s3_object_key.split('/')[-1].replace('.py', '')
-
-    # Wait for the DAG to be recognized by Airflow
-    retries = 10
-    delay = 5
-    dag_bag = DagBag()
-
-    for _ in range(retries):
-        if dag_name in dag_bag.dags:
-            break
-        time.sleep(delay)
-        dag_bag = DagBag()
-    else:
-        raise ValueError(f"DAG {dag_name} not found in Airflow after {retries * delay} seconds")
-
-    # Trigger the new DAG
-    from airflow.api.common.experimental.trigger_dag import trigger_dag
-    trigger_dag(dag_id=dag_name)
+def trigger_new_dag(dag_id, **kwargs):
+    client = boto3.client('mwaa')
+    client.create_cli_token(Name='mwaa-env-name')  # replace with your MWAA environment name
+    # Construct the Airflow CLI command
+    command = f'airflow dags trigger {dag_id}'
+    client.execute_command(Command=command)
 
 default_args = {
     'owner': 'airflow',
-    'start_date': days_ago(1),
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-with DAG(
-    dag_id='monitor_s3_and_trigger_dag',
+dag = DAG(
+    'monitor_new_dags',
     default_args=default_args,
-    schedule_interval='*/10 * * * *',  # This sets the DAG to run every 10 minutes
+    description='A DAG to monitor and trigger new DAGs',
+    schedule_interval=timedelta(minutes=1),
     catchup=False,
-) as dag:
+)
 
-    wait_for_new_dag = S3KeySensor(
-        task_id='wait_for_new_dag',
-        bucket_name=S3_BUCKET,
-        bucket_key=f'{S3_PREFIX}*.py',
-        wildcard_match=True,
-        timeout=18 * 60 * 60,
-        poke_interval=60,
-    )
+sensor = S3KeySensor(
+    task_id='check_for_new_dag',
+    bucket_key='s3://my-bucket/dags/new_dag_file.py',  # Specify the S3 path to the new DAG file
+    wildcard_match=True,
+    aws_conn_id='aws_default',
+    timeout=18 * 60 * 60,
+    poke_interval=60,
+    dag=dag,
+)
 
-    process_new_dag_file = PythonOperator(
-        task_id='process_new_dag_file',
-        python_callable=process_new_dag_file,
-        provide_context=True,
-    )
+trigger = PythonOperator(
+    task_id='trigger_new_dag',
+    python_callable=trigger_new_dag,
+    op_kwargs={'dag_id': 'my_new_dag'},  # Specify the new DAG ID
+    dag=dag,
+)
 
-    wait_for_new_dag >> process_new_dag_file
+sensor >> trigger
