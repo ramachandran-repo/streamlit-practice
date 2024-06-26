@@ -1,64 +1,45 @@
-import boto3
-from datetime import datetime, timezone, timedelta
-import os
+name: Upload Python Files and Run DAG Generator
 
-def list_recent_dag_files(bucket_name, prefix='dags/', minutes=10):
-    s3_client = boto3.client('s3')
-    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-    
-    recent_files = []
-    threshold_time = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    
-    for obj in response.get('Contents', []):
-        if obj['Key'].endswith('.py') and obj['LastModified'] > threshold_time:
-            recent_files.append(obj['Key'])
-    
-    return recent_files
+on:
+  push:
+    paths:
+      - 'config.yaml'
 
-def trigger_new_dags(bucket_name, minutes=10, **kwargs):
-    recent_files = list_recent_dag_files(bucket_name=bucket_name, minutes=minutes)
-    for file in recent_files:
-        dag_id = os.path.splitext(os.path.basename(file))[0]
-        # Use os.system to trigger the DAG
-        trigger_dag_command = f'airflow dags trigger {dag_id}'
-        os.system(trigger_dag_command)
+jobs:
+  upload-and-run:
+    runs-on: ubuntu-latest
 
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
+    - name: Set up Python
+      uses: actions/setup-python@v3
+      with:
+        python-version: '3.x'
 
+    - name: Install AWS CLI
+      run: |
+        pip install awscli
 
+    - name: Upload Python files to S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        S3_BUCKET_SOURCE: ${{ secrets.S3_BUCKET_SOURCE }}
+      run: |
+        aws s3 cp src/ s3://${{ env.S3_BUCKET_SOURCE }}/ --recursive --exclude "*" --include "*.py"
 
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.python_operator import PythonOperator
+    - name: Run DAG generator script
+      run: |
+        python path/to/your/dag_generator.py
 
-# Define the DAG
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
-
-dag = DAG(
-    'monitor_and_trigger_recent_dags',
-    default_args=default_args,
-    description='A DAG to monitor and trigger new DAGs uploaded in the last 10 minutes',
-    schedule_interval=timedelta(minutes=10),  # Run every 10 minutes
-    catchup=False,
-)
-
-# Define the PythonOperator to trigger the new DAGs
-bucket_name = 'your-s3-bucket-name'  # replace with your S3 bucket name
-
-trigger_dags_task = PythonOperator(
-    task_id='trigger_new_dags',
-    python_callable=trigger_new_dags,
-    op_kwargs={'bucket_name': bucket_name, 'minutes': 10},
-    provide_context=True,
-    dag=dag,
-)
-
-trigger_dags_task
+    - name: Upload DAG file to S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_REGION: ${{ secrets.AWS_REGION }}
+        S3_BUCKET_DAG: ${{ secrets.S3_BUCKET_DAG }}
+      run: |
+        aws s3 cp path/to/generated_dag_file.py s3://${{ env.S3_BUCKET_DAG }}/
