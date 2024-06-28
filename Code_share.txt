@@ -1,57 +1,15 @@
-import json
+from datetime import datetime
 
-def read_txt_file(txt_file):
-    """
-    Reads a TXT file and processes its contents into a dictionary.
-    
-    Args:
-        txt_file (str): Path to the input TXT file.
-        
-    Returns:
-        dict: A dictionary with keys and values extracted from the TXT file.
-    """
-    data = {}
-    try:
-        with open(txt_file, 'r') as file:
-            for line in file:
-                key, value = line.strip().split(': ', 1)
-                data[key] = value
-    except FileNotFoundError:
-        print(f"Error: The file {txt_file} was not found.")
-    except ValueError:
-        print(f"Error: The file {txt_file} has an incorrect format.")
-    return data
+# Get the current date and time
+current_datetime = datetime.now()
 
-def write_json_file(data, json_file):
-    """
-    Writes a dictionary to a JSON file.
-    
-    Args:
-        data (dict): The data to write to the JSON file.
-        json_file (str): Path to the output JSON file.
-    """
-    try:
-        with open(json_file, 'w') as file:
-            json.dump(data, file, indent=4)
-        print(f"Data has been written to {json_file}.")
-    except IOError:
-        print(f"Error: Unable to write to the file {json_file}.")
+# Format the date and time as a string suitable for a file name
+formatted_datetime = current_datetime.strftime("%Y%m%d_%H%M%S")
 
-def convert_txt_to_json(txt_file, json_file):
-    """
-    Converts a TXT file to a JSON file.
-    
-    Args:
-        txt_file (str): Path to the input TXT file.
-        json_file (str): Path to the output JSON file.
-    """
-    data = read_txt_file(txt_file)
-    if data:
-        write_json_file(data, json_file)
+# Base file name
+base_file_name = "my_file"
 
-# Define the input TXT file and output JSON file paths
-txt_file = 'input.txt'
-json_file = 'output.json'
+# Add the date and time to the file name
+file_name_with_datetime = f"{base_file_name}_{formatted_datetime}.txt"
 
-# Convert the TXT file to a JSON file
-convert_txt_to_json(txt_file, json_file)
+print(file_name_with_datetime)
