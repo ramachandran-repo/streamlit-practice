@@ -1,45 +1,57 @@
-name: Upload Python Files and Run DAG Generator
+import json
 
-on:
-  push:
-    paths:
-      - 'config.yaml'
+def read_txt_file(txt_file):
+    """
+    Reads a TXT file and processes its contents into a dictionary.
+    
+    Args:
+        txt_file (str): Path to the input TXT file.
+        
+    Returns:
+        dict: A dictionary with keys and values extracted from the TXT file.
+    """
+    data = {}
+    try:
+        with open(txt_file, 'r') as file:
+            for line in file:
+                key, value = line.strip().split(': ', 1)
+                data[key] = value
+    except FileNotFoundError:
+        print(f"Error: The file {txt_file} was not found.")
+    except ValueError:
+        print(f"Error: The file {txt_file} has an incorrect format.")
+    return data
 
-jobs:
-  upload-and-run:
-    runs-on: ubuntu-latest
+def write_json_file(data, json_file):
+    """
+    Writes a dictionary to a JSON file.
+    
+    Args:
+        data (dict): The data to write to the JSON file.
+        json_file (str): Path to the output JSON file.
+    """
+    try:
+        with open(json_file, 'w') as file:
+            json.dump(data, file, indent=4)
+        print(f"Data has been written to {json_file}.")
+    except IOError:
+        print(f"Error: Unable to write to the file {json_file}.")
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+def convert_txt_to_json(txt_file, json_file):
+    """
+    Converts a TXT file to a JSON file.
+    
+    Args:
+        txt_file (str): Path to the input TXT file.
+        json_file (str): Path to the output JSON file.
+    """
+    data = read_txt_file(txt_file)
+    if data:
+        write_json_file(data, json_file)
 
-    - name: Set up Python
-      uses: actions/setup-python@v3
-      with:
-        python-version: '3.x'
+# Define the input TXT file and output JSON file paths
+txt_file = 'input.txt'
+json_file = 'output.json'
 
-    - name: Install AWS CLI
-      run: |
-        pip install awscli
-
-    - name: Upload Python files to S3
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_REGION: ${{ secrets.AWS_REGION }}
-        S3_BUCKET_SOURCE: ${{ secrets.S3_BUCKET_SOURCE }}
-      run: |
-        aws s3 cp src/ s3://${{ env.S3_BUCKET_SOURCE }}/ --recursive --exclude "*" --include "*.py"
-
-    - name: Run DAG generator script
-      run: |
-        python path/to/your/dag_generator.py
-
-    - name: Upload DAG file to S3
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        AWS_REGION: ${{ secrets.AWS_REGION }}
-        S3_BUCKET_DAG: ${{ secrets.S3_BUCKET_DAG }}
-      run: |
-        aws s3 cp path/to/generated_dag_file.py s3://${{ env.S3_BUCKET_DAG }}/
+# Convert the TXT file to a JSON file
+convert_txt_to_json(txt_file, json_file)
