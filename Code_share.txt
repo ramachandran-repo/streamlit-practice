@@ -1,15 +1,107 @@
-from datetime import datetime
+import os
+import logging
+from datetime import datetime, timedelta
 
-# Get the current date and time
-current_datetime = datetime.now()
+import boto3
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.models.dagbag import DagBag
+from airflow.api.common.experimental.trigger_dag import trigger_dag
 
-# Format the date and time as a string suitable for a file name
-formatted_datetime = current_datetime.strftime("%Y%m%d_%H%M%S")
+# Initialize the S3 client
+s3_client = boto3.client('s3')
 
-# Base file name
-base_file_name = "my_file"
+def get_recent_files(bucket_name, folder_name, time_interval_minutes=10):
+    """Fetch files uploaded in the last `time_interval_minutes`."""
+    current_time = datetime.utcnow()
+    time_threshold = current_time - timedelta(minutes=time_interval_minutes)
 
-# Add the date and time to the file name
-file_name_with_datetime = f"{base_file_name}_{formatted_datetime}.txt"
+    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_name)
+    if 'Contents' not in response:
+        return []
 
-print(file_name_with_datetime)
+    recent_files = [
+        obj['Key'] for obj in response['Contents']
+        if obj['LastModified'].replace(tzinfo=None) > time_threshold
+    ]
+
+    return recent_files
+
+def get_non_cron_dags():
+    """Retrieve DAGs that are not scheduled with cron."""
+    dag_bag = DagBag()
+    non_cron_dags = [
+        dag_id for dag_id, dag in dag_bag.dags.items()
+        if 'non-cron' in dag.tags or dag.schedule_interval is None
+    ]
+    return non_cron_dags
+
+def get_processed_files(bucket_name, state_file_key):
+    """Read the list of processed files from S3."""
+    try:
+        response = s3_client.get_object(Bucket=bucket_name, Key=state_file_key)
+        processed_files = response['Body'].read().decode('utf-8').splitlines()
+        return processed_files
+    except s3_client.exceptions.NoSuchKey:
+        return []
+
+def save_processed_files(bucket_name, state_file_key, processed_files):
+    """Write the list of processed files to S3."""
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=state_file_key,
+        Body='\n'.join(processed_files).encode('utf-8')
+    )
+
+def check_s3_and_trigger(**kwargs):
+    """Check S3 for new files and trigger non-cron DAGs."""
+    bucket_name = os.getenv('S3_BUCKET_NAME')
+    folder_name = os.getenv('S3_FOLDER_NAME')
+    state_file_key = os.getenv('STATE_FILE_KEY')
+
+    recent_files = get_recent_files(bucket_name, folder_name)
+    processed_files = get_processed_files(bucket_name, state_file_key)
+
+    new_files = [file for file in recent_files if file not in processed_files]
+
+    if new_files:
+        non_cron_dags = get_non_cron_dags()
+        for file in new_files:
+            for dag_id in non_cron_dags:
+                try:
+                    trigger_dag(dag_id=dag_id, run_id=f"manual__{file}", conf={"file_key": file})
+                    logging.info(f"Triggered DAG {dag_id} for file: {file}")
+                except Exception as e:
+                    logging.error(f"Error triggering DAG {dag_id} for file {file}: {str(e)}")
+            processed_files.append(file)
+        
+        save_processed_files(bucket_name, state_file_key, processed_files)
+    else:
+        logging.info("No new files found.")
+
+# Define the DAG
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+dag = DAG(
+    's3_file_monitor_non_cron',
+    default_args=default_args,
+    description='Monitor S3 bucket and trigger non-cron workflows',
+    schedule_interval=timedelta(minutes=10),
+    catchup=False,
+)
+
+# Define the PythonOperator
+check_s3_task = PythonOperator(
+    task_id='check_s3_and_trigger',
+    python_callable=check_s3_and_trigger,
+    provide_context=True,
+    dag=dag,
+)
+
+check_s3_task
