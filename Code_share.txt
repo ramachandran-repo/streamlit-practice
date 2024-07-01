@@ -1,12 +1,13 @@
 import os
 import logging
+import json
+import subprocess
 from datetime import datetime, timedelta
 
 import boto3
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models.dagbag import DagBag
-from airflow.api.common.experimental.trigger_dag import trigger_dag
 
 # Initialize the S3 client
 s3_client = boto3.client('s3')
@@ -53,6 +54,20 @@ def save_processed_files(bucket_name, state_file_key, processed_files):
         Body='\n'.join(processed_files).encode('utf-8')
     )
 
+def trigger_dag_via_cli(dag_id, run_id, conf):
+    """Trigger a DAG using the `airflow dags trigger` command."""
+    try:
+        conf_str = json.dumps(conf)  # Convert dict to JSON string
+        result = subprocess.run(
+            ['airflow', 'dags', 'trigger', dag_id, '--run-id', run_id, '--conf', conf_str],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        logging.info(f"Triggered DAG {dag_id}: {result.stdout}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Error triggering DAG {dag_id}: {e.stderr}")
+
 def check_s3_and_trigger(**kwargs):
     """Check S3 for new files and trigger non-cron DAGs."""
     bucket_name = os.getenv('S3_BUCKET_NAME')
@@ -68,11 +83,9 @@ def check_s3_and_trigger(**kwargs):
         non_cron_dags = get_non_cron_dags()
         for file in new_files:
             for dag_id in non_cron_dags:
-                try:
-                    trigger_dag(dag_id=dag_id, run_id=f"manual__{file}", conf={"file_key": file})
-                    logging.info(f"Triggered DAG {dag_id} for file: {file}")
-                except Exception as e:
-                    logging.error(f"Error triggering DAG {dag_id} for file {file}: {str(e)}")
+                run_id = f"manual__{file.replace('/', '__')}"
+                conf = {"file_key": file}
+                trigger_dag_via_cli(dag_id, run_id, conf)
             processed_files.append(file)
         
         save_processed_files(bucket_name, state_file_key, processed_files)
