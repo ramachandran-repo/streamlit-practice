@@ -1,120 +1,21 @@
-import os
-import logging
-import json
-import subprocess
-from datetime import datetime, timedelta
+name: Append Timestamp and Set Env Variable
 
-import boto3
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.models.dagbag import DagBag
+on: [push]
 
-# Initialize the S3 client
-s3_client = boto3.client('s3')
+jobs:
+  build:
+    runs-on: ubuntu-latest
 
-def get_recent_files(bucket_name, folder_name, time_interval_minutes=10):
-    """Fetch files uploaded in the last `time_interval_minutes`."""
-    current_time = datetime.utcnow()
-    time_threshold = current_time - timedelta(minutes=time_interval_minutes)
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
 
-    response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=folder_name)
-    if 'Contents' not in response:
-        return []
+    - name: Create timestamp and append to string
+      id: create_timestamp
+      run: |
+        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+        STRING_WITH_TIMESTAMP="YourString_${TIMESTAMP}"
+        echo "STRING_WITH_TIMESTAMP=${STRING_WITH_TIMESTAMP}" >> $GITHUB_ENV
 
-    recent_files = [
-        obj['Key'] for obj in response['Contents']
-        if obj['LastModified'].replace(tzinfo=None) > time_threshold
-    ]
-
-    return recent_files
-
-def get_non_cron_dags():
-    """Retrieve DAGs that are not scheduled with cron."""
-    dag_bag = DagBag()
-    non_cron_dags = [
-        dag_id for dag_id, dag in dag_bag.dags.items()
-        if 'non-cron' in dag.tags or dag.schedule_interval is None
-    ]
-    return non_cron_dags
-
-def get_processed_files(bucket_name, state_file_key):
-    """Read the list of processed files from S3."""
-    try:
-        response = s3_client.get_object(Bucket=bucket_name, Key=state_file_key)
-        processed_files = response['Body'].read().decode('utf-8').splitlines()
-        return processed_files
-    except s3_client.exceptions.NoSuchKey:
-        return []
-
-def save_processed_files(bucket_name, state_file_key, processed_files):
-    """Write the list of processed files to S3."""
-    s3_client.put_object(
-        Bucket=bucket_name,
-        Key=state_file_key,
-        Body='\n'.join(processed_files).encode('utf-8')
-    )
-
-def trigger_dag_via_cli(dag_id, run_id, conf):
-    """Trigger a DAG using the `airflow dags trigger` command."""
-    try:
-        conf_str = json.dumps(conf)  # Convert dict to JSON string
-        result = subprocess.run(
-            ['airflow', 'dags', 'trigger', dag_id, '--run-id', run_id, '--conf', conf_str],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        logging.info(f"Triggered DAG {dag_id}: {result.stdout}")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error triggering DAG {dag_id}: {e.stderr}")
-
-def check_s3_and_trigger(**kwargs):
-    """Check S3 for new files and trigger non-cron DAGs."""
-    bucket_name = os.getenv('S3_BUCKET_NAME')
-    folder_name = os.getenv('S3_FOLDER_NAME')
-    state_file_key = os.getenv('STATE_FILE_KEY')
-
-    recent_files = get_recent_files(bucket_name, folder_name)
-    processed_files = get_processed_files(bucket_name, state_file_key)
-
-    new_files = [file for file in recent_files if file not in processed_files]
-
-    if new_files:
-        non_cron_dags = get_non_cron_dags()
-        for file in new_files:
-            for dag_id in non_cron_dags:
-                run_id = f"manual__{file.replace('/', '__')}"
-                conf = {"file_key": file}
-                trigger_dag_via_cli(dag_id, run_id, conf)
-            processed_files.append(file)
-        
-        save_processed_files(bucket_name, state_file_key, processed_files)
-    else:
-        logging.info("No new files found.")
-
-# Define the DAG
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
-
-dag = DAG(
-    's3_file_monitor_non_cron',
-    default_args=default_args,
-    description='Monitor S3 bucket and trigger non-cron workflows',
-    schedule_interval=timedelta(minutes=10),
-    catchup=False,
-)
-
-# Define the PythonOperator
-check_s3_task = PythonOperator(
-    task_id='check_s3_and_trigger',
-    python_callable=check_s3_and_trigger,
-    provide_context=True,
-    dag=dag,
-)
-
-check_s3_task
+    - name: Output the environment variable
+      run: echo ${{ env.STRING_WITH_TIMESTAMP }}
