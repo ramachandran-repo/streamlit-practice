@@ -1,21 +1,91 @@
-name: Append Timestamp and Set Env Variable
+FROM r-base:latest
 
-on: [push]
+ENV SCRIPT_DIR=/app
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+RUN apt-get update && \
+    apt-get install -y \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    libxml2-dev
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+COPY src/requirements.txt $SCRIPT_DIR/requirements.txt
 
-    - name: Create timestamp and append to string
-      id: create_timestamp
-      run: |
-        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-        STRING_WITH_TIMESTAMP="YourString_${TIMESTAMP}"
-        echo "STRING_WITH_TIMESTAMP=${STRING_WITH_TIMESTAMP}" >> $GITHUB_ENV
+echo "Installing R and dependencies" && \
+apt-get update && \
+apt-get install -y --no-install-recommends r-base && \
+echo "Installing R packages from requirements.txt" && \
+R -e "install.packages(readLines('$SCRIPT_DIR/requirements.txt'))" && \
+apt-get clean && \
+rm -rf /var/lib/apt/lists/*;
 
-    - name: Output the environment variable
-      run: echo ${{ env.STRING_WITH_TIMESTAMP }}
+COPY src/*.R $SCRIPT_DIR/;
+
+ENTRYPOINT ["sh", "-c"]
+
+CMD ["Rscript", "sample_r_script.R"]
+
+
+
+aws.s3
+dplyr
+readr
+
+
+# Load necessary libraries
+if (!requireNamespace("aws.s3", quietly = TRUE)) install.packages("aws.s3")
+if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+if (!requireNamespace("readr", quietly = TRUE)) install.packages("readr")
+
+library(aws.s3)
+library(dplyr)
+library(readr)
+
+# Function to parse S3 path
+parse_s3_path <- function(s3_path) {
+  s3_path <- gsub("s3://", "", s3_path)
+  parts <- strsplit(s3_path, "/", fixed = TRUE)[[1]]
+  bucket_name <- parts[1]
+  object_key <- paste(parts[-1], collapse = "/")
+  list(bucket_name = bucket_name, object_key = object_key)
+}
+
+# Read command line arguments
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 2) {
+  stop("Please provide input and output S3 paths as command line arguments.")
+}
+input_path <- args[1]
+output_path <- args[2]
+
+# Parse S3 paths
+input_s3 <- parse_s3_path(input_path)
+output_s3 <- parse_s3_path(output_path)
+
+# Set AWS credentials and region (these should be provided by the ECS task role)
+# Sys.setenv("AWS_ACCESS_KEY_ID" = "your_access_key_id",
+#            "AWS_SECRET_ACCESS_KEY" = "your_secret_access_key",
+#            "AWS_DEFAULT_REGION" = "your_region")
+
+# Download CSV file from S3
+input_file <- s3read_using(FUN = read_csv, object = input_s3$object_key, bucket = input_s3$bucket_name)
+
+# Data cleaning (example: removing rows with NA values)
+cleaned_data <- input_file %>%
+  drop_na()
+
+# Save cleaned data to a temporary file
+temp_file <- tempfile(fileext = ".csv")
+write_csv(cleaned_data, temp_file)
+
+# Upload cleaned CSV file to S3
+put_object(file = temp_file, object = output_s3$object_key, bucket = output_s3$bucket_name)
+
+# Clean up temporary file
+file.remove(temp_file)
+
+# Print success message
+print("Data cleaned and uploaded to S3 successfully.")
+
+
+
+
