@@ -1,81 +1,112 @@
-# Load necessary libraries
-if (!requireNamespace("aws.s3", quietly = TRUE)) install.packages("aws.s3")
-if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
-if (!requireNamespace("readr", quietly = TRUE)) install.packages("readr")
-
-library(aws.s3)
+library(optparse)
+library(paws)
 library(dplyr)
-library(readr)
+library(logger)
 
-# Function to parse S3 path
-parse_s3_path <- function(s3_path) {
-  print(paste("Parsing S3 path:", s3_path))
-  if (grepl("^s3://", s3_path)) {
-    s3_path <- gsub("s3://", "", s3_path)
-    parts <- strsplit(s3_path, "/", fixed = TRUE)[[1]]
-    bucket_name <- parts[1]
-    object_key <- paste(parts[-1], collapse = "/")
-    list(bucket_name = bucket_name, object_key = object_key)
-  } else {
-    stop("Invalid S3 path format. Path should start with 's3://'.")
-  }
+# Set up command-line options
+option_list <- list(
+  make_option(c("-i", "--input_path"), type = "character", default = NULL,
+              help = "S3 input path, e.g., s3://your-bucket-name/path/to/your/folder/", metavar = "character"),
+  make_option(c("-o", "--output_path"), type = "character", default = NULL,
+              help = "S3 output path, e.g., s3://your-bucket-name/path/to/your/output/folder/", metavar = "character")
+)
+
+opt_parser <- OptionParser(option_list = option_list)
+opt <- parse_args(opt_parser)
+
+if (is.null(opt$input_path) || is.null(opt$output_path)) {
+  print_help(opt_parser)
+  stop("Input and output paths are required.")
 }
 
-# Read command line arguments
-args <- commandArgs(trailingOnly = TRUE)
-print("Command line arguments received:")
-print(args)
-
-if (length(args) < 2) {
-  stop("Please provide input and output S3 paths as command line arguments.")
+# Function to parse S3 URI
+parse_s3_uri <- function(s3_uri) {
+  matches <- regexec("s3://([^/]+)/(.*)", s3_uri)
+  match <- regmatches(s3_uri, matches)
+  bucket <- match[[1]][2]
+  key <- match[[1]][3]
+  return(list(bucket = bucket, key = key))
 }
-input_path <- args[1]
-output_path <- args[2]
 
-# Log the provided arguments
-print(paste("Input Path Argument:", input_path))
-print(paste("Output Path Argument:", output_path))
+input <- parse_s3_uri(opt$input_path)
+output <- parse_s3_uri(opt$output_path)
 
-# Parse S3 paths
-input_s3 <- parse_s3_path(input_path)
-output_s3 <- parse_s3_path(output_path)
+# Set up logging
+log_appender(appender_file("log.txt"))
 
-# Log the parsed paths
-print(paste("Parsed Input S3 Path - Bucket:", input_s3$bucket_name, "Key:", input_s3$object_key))
-print(paste("Parsed Output S3 Path - Bucket:", output_s3$bucket_name, "Key:", output_s3$object_key))
+log_info("Setting AWS region")
+Sys.setenv("AWS_DEFAULT_REGION" = "us-east-1")  # Adjust to your region
 
-# List objects in the input S3 path
-print("Listing objects in the input S3 path...")
-objects <- get_bucket(input_s3$bucket_name, prefix = input_s3$object_key)
+# Initialize S3 client
+s3 <- paws::s3()
 
-# Filter for CSV files and select the first one
-csv_files <- objects[grepl("\\.csv$", sapply(objects, function(x) x$Key))]
+# Define the S3 bucket and folder for input and output
+input_bucket <- input$bucket
+input_folder <- input$key
+output_bucket <- output$bucket
+output_folder <- output$key
+
+cat("Input bucket:", input_bucket, "\n")
+cat("Input folder:", input_folder, "\n")
+cat("Output bucket:", output_bucket, "\n")
+cat("Output folder:", output_folder, "\n")
+
+# List all CSV files in the input folder
+cat("Listing CSV files in folder\n")
+csv_files <- s3$list_objects_v2(Bucket = input_bucket, Prefix = input_folder)$Contents %>%
+  purrr::map_chr("Key") %>%
+  purrr::keep(~ grepl("\\.csv$", .))
+
+cat("Found CSV files:", paste(csv_files, collapse = ", "), "\n")
+
 if (length(csv_files) == 0) {
-  stop("No CSV files found in the input path.")
+  cat("No CSV files found in the specified folder\n")
+  stop("No CSV files to process")
 }
-input_csv_key <- csv_files[[1]]$Key
-print(paste("Selected CSV file:", input_csv_key))
 
-# Download the selected CSV file from S3
-print("Downloading CSV file from S3...")
-input_file <- s3read_using(FUN = read_csv, object = input_csv_key, bucket = input_s3$bucket_name)
+# Function to clean a data frame
+clean_data <- function(df, expected_column) {
+  if (!expected_column %in% colnames(df)) {
+    stop(paste("Expected column", expected_column, "not found in data frame. Available columns:", paste(colnames(df), collapse = ", ")))
+  }
+ 
+  cleaned_df <- df %>%
+    filter(!is.na(.data[[expected_column]])) %>%
+    mutate(new_column = .data[[expected_column]] * 2)
+ 
+  return(cleaned_df)
+}
 
-# Data cleaning (example: removing rows with NA values)
-print("Cleaning data...")
-cleaned_data <- input_file %>%
-  drop_na()
+# Process each CSV file
+for (csv_file in csv_files) {
+  cat("Processing file:", csv_file, "\n")
+ 
+  tryCatch({
+    # Read the CSV file from S3
+    obj <- s3$get_object(Bucket = input_bucket, Key = csv_file)
+    df <- read.csv(text = rawToChar(obj$Body), stringsAsFactors = FALSE)
+   
+    cat("Columns in CSV file:", paste(colnames(df), collapse = ", "), "\n")
+   
+    # Clean the data
+    df_cleaned <- clean_data(df, "quantity")  # Replace "quantity" with the actual column name
+   
+    # Define the output file name
+    output_file <- sub(input_folder, output_folder, csv_file)
+    output_file <- sub("\\.csv$", "_cleaned.csv", output_file)
+   
+    cat("Saving cleaned file to:", output_file, "\n")
+   
+    # Write the cleaned data back to S3
+    temp_file <- tempfile(fileext = ".csv")
+    write.csv(df_cleaned, temp_file, row.names = FALSE)
+    s3$put_object(Bucket = output_bucket, Key = output_file, Body = readBin(temp_file, "raw", file.info(temp_file)$size))
+    file.remove(temp_file)
+   
+    cat("Successfully processed and saved cleaned file:", output_file, "\n")
+  }, error = function(e) {
+    cat("Error processing file:", csv_file, "Error:", conditionMessage(e), "\n")
+  })
+}
 
-# Save cleaned data to a temporary file
-temp_file <- tempfile(fileext = ".csv")
-print(paste("Saving cleaned data to temporary file:", temp_file))
-write_csv(cleaned_data, temp_file)
-
-# Upload cleaned CSV file to S3
-print("Uploading cleaned data to S3...")
-put_object(file = temp_file, object = output_s3$object_key, bucket = output_s3$bucket_name)
-
-# Clean up temporary file
-file.remove(temp_file)
-
-# Print success message
-print("Data cleaned and uploaded to S3 successfully.")
+cat("Script completed successfully\n")
