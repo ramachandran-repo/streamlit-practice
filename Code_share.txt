@@ -1,23 +1,16 @@
-library(optparse)
 library(paws)
 library(dplyr)
 library(logger)
 
-# Set up command-line options
-option_list <- list(
-  make_option(c("-i", "--input_path"), type = "character", default = NULL,
-              help = "S3 input path, e.g., s3://your-bucket-name/path/to/your/folder/", metavar = "character"),
-  make_option(c("-o", "--output_path"), type = "character", default = NULL,
-              help = "S3 output path, e.g., s3://your-bucket-name/path/to/your/output/folder/", metavar = "character")
-)
+# Parse command-line arguments
+args <- commandArgs(trailingOnly = TRUE)
 
-opt_parser <- OptionParser(option_list = option_list)
-opt <- parse_args(opt_parser)
-
-if (is.null(opt$input_path) || is.null(opt$output_path)) {
-  print_help(opt_parser)
-  stop("Input and output paths are required.")
+if (length(args) != 2) {
+  stop("Two arguments are required: input_path and output_path")
 }
+
+input_path <- args[1]
+output_path <- args[2]
 
 # Function to parse S3 URI
 parse_s3_uri <- function(s3_uri) {
@@ -28,14 +21,14 @@ parse_s3_uri <- function(s3_uri) {
   return(list(bucket = bucket, key = key))
 }
 
-input <- parse_s3_uri(opt$input_path)
-output <- parse_s3_uri(opt$output_path)
+input <- parse_s3_uri(input_path)
+output <- parse_s3_uri(output_path)
 
 # Set up logging
 log_appender(appender_file("log.txt"))
 
 log_info("Setting AWS region")
-Sys.setenv("AWS_DEFAULT_REGION" = "us-east-1")  # Adjust to your region
+Sys.setenv("AWS_DEFAULT_REGION" = "us-west-2")  # Adjust to your region
 
 # Initialize S3 client
 s3 <- paws::s3()
@@ -69,40 +62,40 @@ clean_data <- function(df, expected_column) {
   if (!expected_column %in% colnames(df)) {
     stop(paste("Expected column", expected_column, "not found in data frame. Available columns:", paste(colnames(df), collapse = ", ")))
   }
- 
+
   cleaned_df <- df %>%
     filter(!is.na(.data[[expected_column]])) %>%
     mutate(new_column = .data[[expected_column]] * 2)
- 
+
   return(cleaned_df)
 }
 
 # Process each CSV file
 for (csv_file in csv_files) {
   cat("Processing file:", csv_file, "\n")
- 
+
   tryCatch({
     # Read the CSV file from S3
     obj <- s3$get_object(Bucket = input_bucket, Key = csv_file)
     df <- read.csv(text = rawToChar(obj$Body), stringsAsFactors = FALSE)
-   
+
     cat("Columns in CSV file:", paste(colnames(df), collapse = ", "), "\n")
-   
+
     # Clean the data
     df_cleaned <- clean_data(df, "quantity")  # Replace "quantity" with the actual column name
-   
+
     # Define the output file name
     output_file <- sub(input_folder, output_folder, csv_file)
     output_file <- sub("\\.csv$", "_cleaned.csv", output_file)
-   
+
     cat("Saving cleaned file to:", output_file, "\n")
-   
+
     # Write the cleaned data back to S3
     temp_file <- tempfile(fileext = ".csv")
     write.csv(df_cleaned, temp_file, row.names = FALSE)
     s3$put_object(Bucket = output_bucket, Key = output_file, Body = readBin(temp_file, "raw", file.info(temp_file)$size))
     file.remove(temp_file)
-   
+
     cat("Successfully processed and saved cleaned file:", output_file, "\n")
   }, error = function(e) {
     cat("Error processing file:", csv_file, "Error:", conditionMessage(e), "\n")
