@@ -1,6 +1,6 @@
 # simple one-time script
 
-prefix = "main."   # <-- change this to your desired prefix
+prefix = "main."
 filename = "notebook_source.sql"
 
 unique_entries = set()
