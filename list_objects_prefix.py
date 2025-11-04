@@ -29,3 +29,15 @@ for m in pattern.finditer(text):
 print("Existing table/view references found:\n")
 for ref in sorted(unique_refs):
     print(ref)
+
+
+
+
+
+
+pattern = re.compile(
+    r"(?:"
+    + "|".join(re.escape(k) for k in keywords)
+    + r")\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){1,3})",
+    re.IGNORECASE
+)
