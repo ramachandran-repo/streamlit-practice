@@ -1,0 +1,24 @@
+tables:
+  employee_fact:
+    alias: e
+    role: fact
+    columns:
+      employee_id: { type: int, aggregatable: true }
+      department_id: { type: int }
+      location_id: { type: int }
+      hire_date: { type: date }
+      termination_date: { type: date }
+
+  department_dim:
+    alias: d
+    role: dimension
+    columns:
+      department_id: { type: int }
+      department_name: { type: string }
+
+  location_dim:
+    alias: l
+    role: dimension
+    columns:
+      location_id: { type: int }
+      location_name: { type: string }
