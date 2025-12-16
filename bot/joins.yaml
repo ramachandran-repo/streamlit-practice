@@ -1,0 +1,14 @@
+joins:
+  - from: employee_fact
+    to: department_dim
+    type: INNER
+    keys:
+      - left: department_id
+        right: department_id
+
+  - from: employee_fact
+    to: location_dim
+    type: INNER
+    keys:
+      - left: location_id
+        right: location_id
